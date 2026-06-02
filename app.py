@@ -9,18 +9,6 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("📊 HR Data Quality Cleaning Pipeline")
-
-st.markdown("""
-### Automated Data Quality System for HR Analytics
-
-Built as part of a Master's thesis at  
-**University of Applied Sciences St. Pölten (USTP)**  
-Course: Digital Innovation and Research
-""")
-
-st.divider()
-
 # ================================================================
 # SAME 20 CLEANING RULES AS ultimate_pipeline.py
 # ================================================================
