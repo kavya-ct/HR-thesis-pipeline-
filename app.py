@@ -9,6 +9,18 @@ st.set_page_config(
     layout="wide"
 )
 
+st.title("📊 HR Data Quality Cleaning Pipeline")
+
+st.markdown("""
+### Automated Data Quality System for HR Analytics
+
+Built as part of a Master's thesis at  
+**University of Applied Sciences St. Pölten (USTP)**  
+Course: Digital Innovation and Research
+""")
+
+st.divider()
+
 # ================================================================
 # SAME 20 CLEANING RULES AS ultimate_pipeline.py
 # ================================================================
@@ -297,3 +309,14 @@ else:
 | 19 | Department/job role inconsistencies → fixed |
 | 20 | Coded number columns (1,2,3) → flagged |
 """)
+    st.divider()
+
+st.markdown(
+    """
+    <div style="text-align: center; color: grey; font-size: 14px;">
+        Created by Kavya Chiganarapplara Thippeswamy | USTP – University of Applied Sciences St. Pölten<br>
+        Master's Thesis Project | Digital Innovation and Research
+    </div>
+    """,
+    unsafe_allow_html=True
+)
