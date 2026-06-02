@@ -198,7 +198,7 @@ def calc_score(df):
 # WEBSITE UI
 # ================================================================
 st.title("📊 HR Data Quality Cleaning Pipeline")
-st.markdown("### Automated HR Data Cleaning — Master's Thesis Tool")
+st.markdown("### Automatically Detect, Clean, and Improve HR Data Quality")
 st.markdown("Upload any messy HR CSV file. The pipeline applies **20 cleaning rules** automatically and gives you a clean file to download.")
 st.divider()
 
