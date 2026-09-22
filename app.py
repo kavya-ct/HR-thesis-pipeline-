@@ -15,16 +15,24 @@ st.set_page_config(
 # ================================================================
 def _is_protected_column(col_name: str) -> bool:
     """
-    Returns True for columns where title-casing would corrupt data:
-    - Email columns       (bob@example.com → Bob@Example.Com is wrong)
-    - ID columns          (EMP1000 → Emp1000 changes the format)
-    - URL / code columns
+    Returns True for columns where str.title() would corrupt data.
+    These columns are handled by specific rules (14, 17, 19) instead.
+    - Email columns    (bob@example.com → Bob@Example.Com is wrong)
+    - ID columns       (EMP1000 → Emp1000 changes the format)
+    - Dept/role cols   (DevOps → Devops, HR → Hr is wrong — Rule 19 handles these)
+    - URL / code cols
     """
     name = col_name.lower()
-    return any(w in name for w in [
-        "email", "mail", "url", "link",
-        "id", "code", "ref", "key", "hash", "token"
-    ])
+    # Email and ID — must keep original casing
+    if any(w in name for w in ["email", "mail", "url", "link",
+                                "id", "code", "ref", "key", "hash", "token"]):
+        return True
+    # Department and job columns — Rule 19 handles these with smart_title
+    if any(w in name for w in ["department", "dept", "division",
+                                "jobrole", "job_role", "jobtitle",
+                                "job_title", "position", "role"]):
+        return True
+    return False
 
 
 # ================================================================
@@ -134,6 +142,23 @@ def clean_hr_data(df: pd.DataFrame):
     for col in df.select_dtypes(include="bool").columns:
         df[col] = df[col].map({True: "Yes", False: "No"})
         yn += 1
+    # FIX: also standardise integer columns that only contain 0 and 1
+    # These are binary flag columns (married=0/1, terminated=0/1 etc)
+    # that should be Yes/No for clarity — but only if clearly binary flags
+    # (skip columns like salary, age that happen to have 0 values)
+    # Skip keywords for 0/1 → Yes/No conversion
+    # Note: "id" removed from skip list because "marriedid" contains "id"
+    # Instead we use a smarter check: skip only if column has many unique values
+    # (real ID cols have hundreds of unique values; binary flags have only 0 and 1)
+    yn_skip_keywords = ["salary","income","pay","wage","age","year","rate","hours",
+                        "score","level","count","number","percent"]
+    for col in df.select_dtypes(include=["int64","int32","Int64"]).columns:
+        if any(w in col.lower() for w in yn_skip_keywords):
+            continue
+        u = set(df[col].dropna().unique())
+        if u.issubset({0, 1, np.int64(0), np.int64(1)}):
+            df[col] = df[col].map({0: "No", 1: "Yes", np.int64(0): "No", np.int64(1): "Yes"})
+            yn += 1
     fixes.append({"n": 8, "name": "Yes/No Standardised",
                   "detail": f"{yn} columns standardised to Yes/No", "count": yn})
 
@@ -161,7 +186,15 @@ def clean_hr_data(df: pd.DataFrame):
                   "detail": f"Column '{gc}' → Male/Female" if gf else "No gender column", "count": gf})
 
     # RULE 10 — Validate age (must be 16-80 for working employees)
-    ac = next((c for c in df.columns if "age" in c.lower()), None)
+    # FIX: use word-boundary matching to avoid matching "age" inside
+    # "managername", "managerid", "engagementsurvey" etc.
+    # Only match columns where "age" is a standalone word/segment.
+    import re as _re
+    ac = next(
+        (c for c in df.columns
+         if _re.search(r'(^|_)age($|_)', c.lower())),
+        None
+    )
     af = 0
     if ac:
         try:
@@ -277,15 +310,34 @@ def clean_hr_data(df: pd.DataFrame):
                   "detail": f"{idf} duplicate IDs detected" if ic else "No ID column found", "count": idf})
 
     # RULE 18 — Standardise date columns to YYYY-MM-DD
+    # FIX 1: removed infer_datetime_format=True (removed in pandas 2.x)
+    # FIX 2: exclude "Unknown" placeholder values (added by Rule 6) when
+    #         calculating success rate — otherwise termination date columns
+    #         (which have many NaN → "Unknown") appear to have low parse rate
+    #         and get skipped even though their real date values are valid.
     df2c = 0
     date_keywords = ["date", "dob", "birth", "hired", "joined", "start", "end", "termination"]
     for col in df.columns:
         if any(w in col.lower() for w in date_keywords):
+            if col not in df.columns:
+                continue
+            # Skip numeric columns (e.g. genderid falsely matches "id")
+            if df[col].dtype in ["int64", "float64"]:
+                continue
             try:
-                converted = pd.to_datetime(df[col], errors="coerce", infer_datetime_format=True)
-                success_rate = converted.notna().sum() / max(len(converted), 1)
+                # Exclude "Unknown" placeholder when measuring parse success
+                real_vals = df[col][df[col].astype(str).str.strip().str.lower() != "unknown"]
+                if len(real_vals) == 0:
+                    continue
+                converted_real = pd.to_datetime(real_vals, errors="coerce", dayfirst=False)
+                success_rate = converted_real.notna().sum() / max(len(real_vals), 1)
                 if success_rate >= 0.8:
-                    df[col] = converted.dt.strftime("%Y-%m-%d")
+                    # Convert the full column — Unknown stays as Unknown (unparseable)
+                    converted_full = pd.to_datetime(df[col], errors="coerce", dayfirst=False)
+                    # Where conversion succeeded, use YYYY-MM-DD; else keep original value
+                    df[col] = converted_full.dt.strftime("%Y-%m-%d").where(
+                        converted_full.notna(), other=df[col]
+                    )
                     df2c += 1
             except Exception:
                 pass
@@ -293,16 +345,47 @@ def clean_hr_data(df: pd.DataFrame):
                   "detail": f"{df2c} date columns → YYYY-MM-DD" if df2c > 0 else "No date columns found", "count": df2c})
 
     # RULE 19 — Standardise department and job role columns
+    # FIX: use smart_title() instead of str.title() to preserve
+    # internal capitals like DevOps, HR, IT, so they are not
+    # corrupted to Devops, Hr, It
+    def smart_title(val: str) -> str:
+        """
+        Capitalise first letter of each word intelligently:
+        - All-lowercase word (finance, sales) → capitalise (Finance, Sales)
+        - All-uppercase short word (HR, IT, AI, BI) → keep uppercase
+        - All-uppercase long word (FINANCE) → Title-case (Finance)
+        - Mixed-case word (DevOps, FinTech) → preserve exactly
+        Handles hyphenated values like DevOps-California correctly.
+        """
+        val = str(val).strip()
+        # Handle hyphen-separated parts (DevOps-California)
+        parts = val.split("-")
+        result_parts = []
+        for part in parts:
+            words = part.split()
+            result_words = []
+            for w in words:
+                if w.islower():
+                    result_words.append(w.capitalize())
+                elif w.isupper() and len(w) <= 5:
+                    result_words.append(w)          # HR, IT, AI, BI, CLOUD → keep
+                elif w.isupper() and len(w) > 5:
+                    result_words.append(w.capitalize())  # FINANCE → Finance
+                else:
+                    result_words.append(w)          # DevOps, FinTech → preserve
+            result_parts.append(" ".join(result_words))
+        return "-".join(result_parts)
+
     dptf = 0
     dept_keywords = ["department", "dept", "division", "jobrole", "job_role",
                      "jobtitle", "job_title", "position", "role"]
     for col in df.columns:
         if any(w in col.lower() for w in dept_keywords):
             if col in df.columns and df[col].dtype == object:
-                df[col] = df[col].astype(str).str.strip().str.title()
+                df[col] = df[col].astype(str).apply(smart_title)
                 dptf += 1
     fixes.append({"n": 19, "name": "Departments Standardised",
-                  "detail": f"{dptf} dept/job columns standardised to Title Case" if dptf > 0 else "No dept columns", "count": dptf})
+                  "detail": f"{dptf} dept/job columns standardised (mixed-case preserved)" if dptf > 0 else "No dept columns", "count": dptf})
 
     # RULE 20 — Flag coded number columns (1,2,3 used as category labels)
     coded = []
