@@ -17,10 +17,12 @@ def _is_protected_column(col_name: str) -> bool:
     """
     Returns True for columns where str.title() would corrupt data.
     These columns are handled by specific rules (14, 17, 19) instead.
-    - Email columns    (bob@example.com → Bob@Example.Com is wrong)
-    - ID columns       (EMP1000 → Emp1000 changes the format)
-    - Dept/role cols   (DevOps → Devops, HR → Hr is wrong — Rule 19 handles these)
+    - Email columns      (bob@example.com → Bob@Example.Com is wrong)
+    - ID columns         (EMP1000 → Emp1000 changes the format)
+    - Dept/role cols     (DevOps → Devops, HR → Hr — Rule 19 handles these)
     - URL / code cols
+    - Name columns       (LeBlanc → Leblanc, O'Brien → O'Brien corrupted)
+                         Protected from str.title(); Rule 7 strips spaces only.
     """
     name = col_name.lower()
     # Email and ID — must keep original casing
@@ -31,6 +33,13 @@ def _is_protected_column(col_name: str) -> bool:
     if any(w in name for w in ["department", "dept", "division",
                                 "jobrole", "job_role", "jobtitle",
                                 "job_title", "position", "role"]):
+        return True
+    # FIX: name columns — Title Case corrupts mixed-case surnames like LeBlanc
+    # and cannot be safely applied to free-text name fields.
+    # Rule 7 will still strip spaces from these columns.
+    if any(w in name for w in ["name", "firstname", "lastname",
+                                "first_name", "last_name", "full_name",
+                                "surname", "givenname", "given_name"]):
         return True
     return False
 
@@ -418,7 +427,13 @@ def calc_score(df: pd.DataFrame) -> float:
     inc = sum(1 for c in txc if (df[c].astype(str).str.strip() != df[c].astype(str)).sum() > 0)
     co = max(0.0, 20.0 - (inc / max(len(txc), 1) * 20))
     # Validity (20 pts)
-    ac = next((c for c in df.columns if "age" in c.lower()), None)
+    # FIX: use same word-boundary regex as Rule 10
+    # so that "managername", "managerid", "percentage" etc. are not
+    # mistakenly treated as the age column.
+    ac = next(
+        (c for c in df.columns if re.search(r'(^|_)age($|_)', c.lower())),
+        None
+    )
     if ac:
         try:
             ages = pd.to_numeric(df[ac], errors="coerce")
